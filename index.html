@@ -1,0 +1,793 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Claude Request Explorer</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    :root {
+      --bg-primary: #ffffff;
+      --bg-secondary: #f7f7f8;
+      --bg-hover: #ebebeb;
+      --text-primary: #2e2e2e;
+      --text-secondary: #686868;
+      --border: #d9d9d9;
+      --accent: #cc785c;
+      --user-msg: #f4f4f4;
+      --assistant-msg: #ffffff;
+      --code-bg: #f5f5f5;
+      --shadow: rgba(0, 0, 0, 0.1);
+    }
+
+    body.dark-mode {
+      --bg-primary: #1a1a1a;
+      --bg-secondary: #2d2d2d;
+      --bg-hover: #3a3a3a;
+      --text-primary: #e8e8e8;
+      --text-secondary: #a8a8a8;
+      --border: #404040;
+      --accent: #cc785c;
+      --user-msg: #2d2d2d;
+      --assistant-msg: #252525;
+      --code-bg: #1e1e1e;
+      --shadow: rgba(0, 0, 0, 0.3);
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      line-height: 1.6;
+    }
+
+    .container {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 30px;
+      padding-bottom: 20px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    h1 {
+      font-size: 28px;
+      font-weight: 600;
+    }
+
+    .header-controls {
+      display: flex;
+      gap: 15px;
+      align-items: center;
+    }
+
+    button {
+      padding: 8px 16px;
+      border: 1px solid var(--border);
+      background: var(--bg-secondary);
+      color: var(--text-primary);
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 14px;
+      transition: all 0.2s;
+    }
+
+    button:hover {
+      background: var(--bg-hover);
+    }
+
+    button:active {
+      transform: scale(0.98);
+    }
+
+    .request-list {
+      display: grid;
+      gap: 12px;
+    }
+
+    .request-item {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .request-item:hover {
+      border-color: var(--accent);
+      box-shadow: 0 2px 8px var(--shadow);
+    }
+
+    .request-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: start;
+      margin-bottom: 8px;
+    }
+
+    .request-meta {
+      display: flex;
+      gap: 12px;
+      font-size: 13px;
+      color: var(--text-secondary);
+    }
+
+    .request-meta span {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .status-badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: 500;
+    }
+
+    .status-200 {
+      background: #d4edda;
+      color: #155724;
+    }
+
+    body.dark-mode .status-200 {
+      background: #1e4620;
+      color: #7de896;
+    }
+
+    .status-error {
+      background: #f8d7da;
+      color: #721c24;
+    }
+
+    body.dark-mode .status-error {
+      background: #4a1f1f;
+      color: #f8b4b4;
+    }
+
+    .request-preview {
+      font-size: 14px;
+      color: var(--text-secondary);
+      margin-top: 8px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .model-badge {
+      background: var(--accent);
+      color: white;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: 500;
+    }
+
+    .detail-view {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 24px;
+      margin-top: 20px;
+    }
+
+    .detail-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 24px;
+      padding-bottom: 16px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .back-button {
+      background: var(--bg-primary);
+    }
+
+    .messages {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-top: 20px;
+    }
+
+    .message {
+      padding: 12px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+    }
+
+    .message.user {
+      background: var(--user-msg);
+    }
+
+    .message.assistant {
+      background: var(--assistant-msg);
+    }
+
+    .message-role {
+      font-weight: 600;
+      font-size: 13px;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin-bottom: 8px;
+      cursor: pointer;
+      user-select: none;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .message-role:hover {
+      opacity: 0.8;
+    }
+
+    .toggle-icon {
+      font-size: 16px;
+      transition: transform 0.2s;
+    }
+
+    .toggle-icon.collapsed {
+      transform: rotate(-90deg);
+    }
+
+    .message-content {
+      white-space: pre-wrap;
+      word-wrap: break-word;
+    }
+
+    .message-content.collapsed {
+      display: none;
+    }
+
+    .message-preview {
+      color: var(--text-secondary);
+      font-size: 13px;
+      margin-top: 8px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .metadata-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+
+    .metadata-item {
+      padding: 12px;
+      background: var(--bg-primary);
+      border-radius: 6px;
+      border: 1px solid var(--border);
+    }
+
+    .metadata-label {
+      font-size: 12px;
+      color: var(--text-secondary);
+      text-transform: uppercase;
+      margin-bottom: 4px;
+    }
+
+    .metadata-value {
+      font-size: 16px;
+      font-weight: 500;
+    }
+
+    .pagination {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 12px;
+      margin-top: 30px;
+      padding-top: 20px;
+      border-top: 1px solid var(--border);
+    }
+
+    .page-info {
+      font-size: 14px;
+      color: var(--text-secondary);
+    }
+
+    .loading {
+      text-align: center;
+      padding: 40px;
+      color: var(--text-secondary);
+    }
+
+    .empty {
+      text-align: center;
+      padding: 60px 20px;
+      color: var(--text-secondary);
+    }
+
+    .empty h2 {
+      margin-bottom: 8px;
+    }
+
+    code {
+      background: var(--code-bg);
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+      font-size: 13px;
+    }
+
+    pre {
+      background: var(--code-bg);
+      padding: 8px;
+      border-radius: 6px;
+      overflow-x: auto;
+      border: 1px solid var(--border);
+      margin: 4px 0;
+    }
+
+    pre code {
+      background: none;
+      padding: 0;
+    }
+
+    .tool-use {
+      background: var(--bg-primary);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px;
+      margin: 2px 0;
+    }
+
+    .tool-name {
+      font-weight: 600;
+      color: var(--accent);
+      margin-bottom: 4px;
+    }
+
+    .copy-button {
+      float: right;
+      padding: 4px 8px;
+      font-size: 12px;
+    }
+
+    .stats-bar {
+      display: flex;
+      gap: 20px;
+      padding: 12px;
+      background: var(--bg-primary);
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      margin-bottom: 20px;
+      font-size: 14px;
+    }
+
+    .stats-bar strong {
+      color: var(--accent);
+    }
+
+    @media (max-width: 768px) {
+      .message.user {
+        margin-left: 20px;
+      }
+
+      .message.assistant {
+        margin-right: 20px;
+      }
+
+      .metadata-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Claude Request Explorer</h1>
+      <div class="header-controls">
+        <button id="darkModeToggle">🌓 Dark Mode</button>
+        <button id="refreshButton">🔄 Refresh</button>
+      </div>
+    </header>
+
+    <div id="app">
+      <div class="loading">Loading requests...</div>
+    </div>
+  </div>
+
+  <script>
+    // State management
+    let currentPage = 1;
+    let totalPages = 1;
+    let totalRequests = 0;
+    let currentView = 'list'; // 'list' or 'detail'
+    let selectedRequest = null;
+
+    // Initialize
+    async function init() {
+      // Check for dark mode preference
+      if (localStorage.getItem('darkMode') === 'true') {
+        document.body.classList.add('dark-mode');
+      }
+
+      // Event listeners
+      document.getElementById('darkModeToggle').addEventListener('click', toggleDarkMode);
+      document.getElementById('refreshButton').addEventListener('click', () => loadRequests(currentPage));
+
+      // Load initial data
+      await loadRequests(1);
+    }
+
+    // Toggle dark mode
+    function toggleDarkMode() {
+      document.body.classList.toggle('dark-mode');
+      localStorage.setItem('darkMode', document.body.classList.contains('dark-mode'));
+    }
+
+    // Load requests from API
+    async function loadRequests(page = 1) {
+      try {
+        const response = await fetch(`/api/requests?page=${page}&limit=20`);
+        const data = await response.json();
+
+        currentPage = page;
+        totalPages = data.totalPages;
+        totalRequests = data.total;
+
+        renderRequestList(data.requests);
+      } catch (error) {
+        console.error('Error loading requests:', error);
+        document.getElementById('app').innerHTML = `
+          <div class="empty">
+            <h2>Error loading requests</h2>
+            <p>${error.message}</p>
+          </div>
+        `;
+      }
+    }
+
+    // Load specific request
+    async function loadRequest(id) {
+      try {
+        const response = await fetch(`/api/requests/${id}`);
+        const data = await response.json();
+        selectedRequest = data;
+        renderDetailView(data);
+      } catch (error) {
+        console.error('Error loading request:', error);
+        alert('Failed to load request details');
+      }
+    }
+
+    // Render request list
+    function renderRequestList(requests) {
+      if (requests.length === 0) {
+        document.getElementById('app').innerHTML = `
+          <div class="empty">
+            <h2>No requests yet</h2>
+            <p>Requests will appear here once you start using the proxy.</p>
+          </div>
+        `;
+        return;
+      }
+
+      const html = `
+        <div class="stats-bar">
+          <span><strong>${totalRequests}</strong> total requests</span>
+        </div>
+        <div class="request-list">
+          ${requests.map(req => renderRequestItem(req)).join('')}
+        </div>
+        ${renderPagination()}
+      `;
+
+      document.getElementById('app').innerHTML = html;
+
+      // Add click listeners
+      requests.forEach(req => {
+        document.getElementById(`req-${req.id}`).addEventListener('click', () => loadRequest(req.id));
+      });
+
+      // Add pagination listeners
+      if (currentPage > 1) {
+        document.getElementById('prevPage').addEventListener('click', () => loadRequests(currentPage - 1));
+      }
+      if (currentPage < totalPages) {
+        document.getElementById('nextPage').addEventListener('click', () => loadRequests(currentPage + 1));
+      }
+    }
+
+    // Render single request item
+    function renderRequestItem(req) {
+      const timestamp = new Date(req.timestamp).toLocaleString();
+      const statusClass = req.status_code === 200 ? 'status-200' : 'status-error';
+
+      // Extract first user message for preview
+      let preview = '';
+      if (req.body && req.body.messages && req.body.messages.length > 0) {
+        const firstMsg = req.body.messages.find(m => m.role === 'user');
+        if (firstMsg && firstMsg.content) {
+          if (typeof firstMsg.content === 'string') {
+            preview = firstMsg.content.substring(0, 150);
+          } else if (Array.isArray(firstMsg.content)) {
+            const textContent = firstMsg.content.find(c => c.type === 'text');
+            if (textContent) {
+              preview = textContent.text.substring(0, 150);
+            }
+          }
+        }
+      }
+
+      return `
+        <div class="request-item" id="req-${req.id}">
+          <div class="request-header">
+            <div>
+              <span class="model-badge">${req.model || req.original_model || 'unknown'}</span>
+              <span class="status-badge ${statusClass}">${req.status_code || 'pending'}</span>
+            </div>
+            <div class="request-meta">
+              <span>⏱️ ${req.response_time || 0}ms</span>
+              <span>🔤 ${(req.input_tokens || 0).toLocaleString()} / ${(req.output_tokens || 0).toLocaleString()}</span>
+            </div>
+          </div>
+          <div style="font-size: 13px; color: var(--text-secondary); margin-bottom: 4px;">${timestamp}</div>
+          ${preview ? `<div class="request-preview">${preview}...</div>` : ''}
+        </div>
+      `;
+    }
+
+    // Render pagination
+    function renderPagination() {
+      if (totalPages <= 1) return '';
+
+      return `
+        <div class="pagination">
+          <button id="prevPage" ${currentPage === 1 ? 'disabled' : ''}>← Previous</button>
+          <span class="page-info">Page ${currentPage} of ${totalPages}</span>
+          <button id="nextPage" ${currentPage === totalPages ? 'disabled' : ''}>Next →</button>
+        </div>
+      `;
+    }
+
+    // Render detail view
+    function renderDetailView(req) {
+      const timestamp = new Date(req.timestamp).toLocaleString();
+
+      let html = `
+        <div class="detail-header">
+          <h2>Request Details</h2>
+          <button class="back-button" id="backButton">← Back to List</button>
+        </div>
+
+        <div class="metadata-grid">
+          <div class="metadata-item">
+            <div class="metadata-label">Timestamp</div>
+            <div class="metadata-value">${timestamp}</div>
+          </div>
+          <div class="metadata-item">
+            <div class="metadata-label">Model</div>
+            <div class="metadata-value">${req.model || req.original_model || 'unknown'}</div>
+          </div>
+          <div class="metadata-item">
+            <div class="metadata-label">Status</div>
+            <div class="metadata-value">${req.status_code || 'pending'}</div>
+          </div>
+          <div class="metadata-item">
+            <div class="metadata-label">Response Time</div>
+            <div class="metadata-value">${req.response_time || 0}ms</div>
+          </div>
+          <div class="metadata-item">
+            <div class="metadata-label">Input Tokens</div>
+            <div class="metadata-value">${(req.input_tokens || 0).toLocaleString()}</div>
+          </div>
+          <div class="metadata-item">
+            <div class="metadata-label">Output Tokens</div>
+            <div class="metadata-value">${(req.output_tokens || 0).toLocaleString()}</div>
+          </div>
+        </div>
+      `;
+
+      // Render messages
+      if (req.body && req.body.messages) {
+        html += '<h3 style="margin: 24px 0 12px 0;">Request Messages</h3>';
+        html += '<div class="messages">';
+        req.body.messages.forEach((msg, index) => {
+          html += renderMessage(msg, index);
+        });
+        html += '</div>';
+      }
+
+      // Render response
+      if (req.response) {
+        html += '<h3 style="margin: 24px 0 12px 0;">Response</h3>';
+
+        // Check if it's a streaming response
+        if (typeof req.response === 'string' && req.response.startsWith('data:')) {
+          html += renderStreamingResponse(req.response);
+        } else if (req.response.content) {
+          html += '<div class="messages">';
+          html += renderMessage({ role: 'assistant', content: req.response.content }, 999);
+          html += '</div>';
+        } else {
+          html += `<pre><code>${JSON.stringify(req.response, null, 2)}</code></pre>`;
+        }
+      }
+
+      document.getElementById('app').innerHTML = `<div class="detail-view">${html}</div>`;
+
+      document.getElementById('backButton').addEventListener('click', () => loadRequests(currentPage));
+    }
+
+    // Render a single message
+    function renderMessage(msg, index) {
+      let content = '';
+      let preview = '';
+
+      if (typeof msg.content === 'string') {
+        content = escapeHtml(msg.content);
+        preview = content.substring(0, 100) + (content.length > 100 ? '...' : '');
+      } else if (Array.isArray(msg.content)) {
+        content = msg.content.map(block => {
+          if (block.type === 'text') {
+            if (!preview) {
+              const text = escapeHtml(block.text);
+              preview = text.substring(0, 100) + (text.length > 100 ? '...' : '');
+            }
+            return escapeHtml(block.text);
+          } else if (block.type === 'tool_use') {
+            if (!preview) preview = `Tool: ${block.name}`;
+            const toolId = `tool-${Date.now()}-${Math.random()}`;
+            return `
+              <div class="tool-use">
+                <div class="tool-name" onclick="toggleMessage('${toolId}')" style="cursor: pointer; user-select: none;">
+                  🔧 ${block.name}
+                  <span class="toggle-icon collapsed" id="icon-${toolId}" style="float: right;">▼</span>
+                </div>
+                <div class="message-preview" id="preview-${toolId}">Click to view parameters</div>
+                <pre class="collapsed" id="content-${toolId}"><code>${JSON.stringify(block.input, null, 2)}</code></pre>
+              </div>
+            `;
+          } else if (block.type === 'tool_result') {
+            if (!preview) preview = 'Tool Result';
+            const toolId = `tool-result-${Date.now()}-${Math.random()}`;
+            return `
+              <div class="tool-use">
+                <div class="tool-name" onclick="toggleMessage('${toolId}')" style="cursor: pointer; user-select: none;">
+                  📊 Tool Result
+                  <span class="toggle-icon collapsed" id="icon-${toolId}" style="float: right;">▼</span>
+                </div>
+                <div class="message-preview" id="preview-${toolId}">Click to view result</div>
+                <pre class="collapsed" id="content-${toolId}"><code>${escapeHtml(block.content)}</code></pre>
+              </div>
+            `;
+          }
+          return '';
+        }).join('');
+      }
+
+      const msgId = `msg-${Date.now()}-${index}`;
+
+      return `
+        <div class="message ${msg.role}">
+          <div class="message-role" onclick="toggleMessage('${msgId}')">
+            <span>${msg.role}</span>
+            <span class="toggle-icon" id="icon-${msgId}">▼</span>
+          </div>
+          <div class="message-preview collapsed" id="preview-${msgId}">${preview}</div>
+          <div class="message-content collapsed" id="content-${msgId}">${content}</div>
+        </div>
+      `;
+    }
+
+    // Toggle message visibility
+    function toggleMessage(msgId) {
+      const content = document.getElementById(`content-${msgId}`);
+      const preview = document.getElementById(`preview-${msgId}`);
+      const icon = document.getElementById(`icon-${msgId}`);
+
+      const isCollapsed = content.classList.contains('collapsed');
+
+      if (isCollapsed) {
+        content.classList.remove('collapsed');
+        preview.classList.add('collapsed');
+        icon.classList.remove('collapsed');
+      } else {
+        content.classList.add('collapsed');
+        preview.classList.remove('collapsed');
+        icon.classList.add('collapsed');
+      }
+    }
+
+    // Render streaming response
+    function renderStreamingResponse(sseData) {
+      const lines = sseData.split('\n');
+      let fullText = '';
+      let toolUses = [];
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+
+        const dataStr = line.substring(6).trim();
+        if (!dataStr || dataStr === '[DONE]') continue;
+
+        try {
+          const data = JSON.parse(dataStr);
+
+          if (data.type === 'content_block_delta' && data.delta) {
+            if (data.delta.type === 'text_delta' && data.delta.text) {
+              fullText += data.delta.text;
+            }
+          }
+
+          if (data.type === 'content_block_start' && data.content_block) {
+            if (data.content_block.type === 'tool_use') {
+              toolUses.push(data.content_block);
+            }
+          }
+        } catch (e) {
+          // Ignore parse errors
+        }
+      }
+
+      let html = '<div class="messages">';
+
+      if (fullText) {
+        const content = escapeHtml(fullText);
+        const preview = content.substring(0, 100) + (content.length > 100 ? '...' : '');
+        const msgId = `msg-streaming-${Date.now()}`;
+
+        html += `
+          <div class="message assistant">
+            <div class="message-role" onclick="toggleMessage('${msgId}')">
+              <span>assistant</span>
+              <span class="toggle-icon" id="icon-${msgId}">▼</span>
+            </div>
+            <div class="message-preview collapsed" id="preview-${msgId}">${preview}</div>
+            <div class="message-content collapsed" id="content-${msgId}">${content}</div>
+          </div>
+        `;
+      }
+
+      if (toolUses.length > 0) {
+        toolUses.forEach((tool, idx) => {
+          const toolId = `tool-${Date.now()}-${idx}`;
+          html += `
+            <div class="tool-use">
+              <div class="tool-name" onclick="toggleMessage('${toolId}')" style="cursor: pointer; user-select: none;">
+                🔧 ${tool.name}
+                <span class="toggle-icon" id="icon-${toolId}" style="float: right;">▼</span>
+              </div>
+              <div class="message-preview collapsed" id="preview-${toolId}">Tool parameters...</div>
+              <pre class="collapsed" id="content-${toolId}"><code>${JSON.stringify(tool.input || {}, null, 2)}</code></pre>
+            </div>
+          `;
+        });
+      }
+
+      html += '</div>';
+      return html;
+    }
+
+    // Utility: Escape HTML
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    // Start the app
+    init();
+  </script>
+</body>
+</html>

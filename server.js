@@ -1,14 +1,6 @@
 const express = require('express');
 const Database = require('better-sqlite3');
 const crypto = require('crypto');
-const zlib = require('zlib');
-const { promisify } = require('util');
-const fs = require('fs');
-const path = require('path');
-const os = require('os');
-
-const gzip = promisify(zlib.gzip);
-const gunzip = promisify(zlib.gunzip);
 
 const app = express();
 const PORT = 8181;
@@ -50,6 +42,9 @@ db.exec(`
 
 // Middleware to parse JSON with increased limit for large Claude Code requests
 app.use(express.json({ limit: '50mb' }));
+
+// Serve static files (index.html)
+app.use(express.static('.'));
 
 // Helper function to sanitize headers (like claude-code-proxy)
 function sanitizeHeaders(headers) {
@@ -139,159 +134,6 @@ function parseSSEStream(sseText) {
   return { fullText, messageId, model, stopReason, usage };
 }
 
-// Conversation tracking - reads from Claude Code's native storage
-const CLAUDE_PROJECTS_PATH = path.join(os.homedir(), '.claude', 'projects');
-
-// Parse a single JSONL conversation file
-function parseConversationFile(filePath, projectPath) {
-  try {
-    const fileStats = fs.statSync(filePath);
-    const content = fs.readFileSync(filePath, 'utf8');
-    const lines = content.split('\n').filter(line => line.trim());
-
-    const messages = [];
-    for (const line of lines) {
-      try {
-        const msg = JSON.parse(line);
-        if (msg.timestamp) {
-          msg.parsedTime = new Date(msg.timestamp);
-        }
-        messages.push(msg);
-      } catch (e) {
-        // Skip malformed lines
-      }
-    }
-
-    // Sort by timestamp
-    messages.sort((a, b) => {
-      if (!a.parsedTime || !b.parsedTime) return 0;
-      return a.parsedTime - b.parsedTime;
-    });
-
-    // Extract session ID from filename
-    const sessionId = path.basename(filePath, '.jsonl');
-    const projectName = projectPath;
-
-    // Find start and end times
-    let startTime = fileStats.mtime;
-    let endTime = fileStats.mtime;
-
-    if (messages.length > 0) {
-      const validTimes = messages.filter(m => m.parsedTime).map(m => m.parsedTime);
-      if (validTimes.length > 0) {
-        startTime = new Date(Math.min(...validTimes));
-        endTime = new Date(Math.max(...validTimes));
-      }
-    }
-
-    return {
-      sessionId,
-      projectPath,
-      projectName,
-      messages,
-      startTime: startTime.toISOString(),
-      endTime: endTime.toISOString(),
-      messageCount: messages.length,
-      fileModTime: fileStats.mtime
-    };
-  } catch (error) {
-    return null;
-  }
-}
-
-// Get all conversations from Claude Code's storage
-function getAllConversations() {
-  const conversations = {};
-
-  try {
-    if (!fs.existsSync(CLAUDE_PROJECTS_PATH)) {
-      return conversations;
-    }
-
-    // Walk through project directories
-    const walkDir = (dir, basePath = '') => {
-      const entries = fs.readdirSync(dir, { withFileTypes: true });
-
-      for (const entry of entries) {
-        const fullPath = path.join(dir, entry.name);
-        const relativePath = basePath ? path.join(basePath, entry.name) : entry.name;
-
-        if (entry.isDirectory()) {
-          walkDir(fullPath, relativePath);
-        } else if (entry.isFile() && entry.name.endsWith('.jsonl')) {
-          // Skip files directly in projects directory
-          if (!basePath) continue;
-
-          const projectPath = basePath;
-          const conv = parseConversationFile(fullPath, projectPath);
-
-          if (conv) {
-            if (!conversations[projectPath]) {
-              conversations[projectPath] = [];
-            }
-            conversations[projectPath].push(conv);
-          }
-        }
-      }
-    };
-
-    walkDir(CLAUDE_PROJECTS_PATH);
-
-    // Sort conversations within each project by modification time (newest first)
-    for (const project in conversations) {
-      conversations[project].sort((a, b) => b.fileModTime - a.fileModTime);
-    }
-  } catch (error) {
-    console.error('Error reading conversations:', error);
-  }
-
-  return conversations;
-}
-
-// Get a specific conversation
-function getConversation(projectPath, sessionId) {
-  try {
-    const filePath = path.join(CLAUDE_PROJECTS_PATH, projectPath, `${sessionId}.jsonl`);
-    return parseConversationFile(filePath, projectPath);
-  } catch (error) {
-    return null;
-  }
-}
-
-// Extract text from message content (handles multiple formats)
-function extractTextFromMessage(message) {
-  try {
-    const msg = typeof message === 'string' ? JSON.parse(message) : message;
-
-    // Direct string
-    if (typeof msg === 'string') return msg;
-
-    // Array format
-    if (Array.isArray(msg)) {
-      for (const item of msg) {
-        if (item.type === 'text' && item.text) return item.text;
-      }
-    }
-
-    // Object with content field
-    if (msg.content) {
-      if (typeof msg.content === 'string') return msg.content;
-      if (Array.isArray(msg.content)) {
-        for (const block of msg.content) {
-          if (block.type === 'text' && block.text) return block.text;
-        }
-      }
-    }
-
-    // Object with text field
-    if (msg.text) return msg.text;
-
-    return '';
-  } catch (e) {
-    return '';
-  }
-}
-
 // Health check
 app.get('/health', (req, res) => {
   res.json({ status: 'healthy', timestamp: new Date() });
@@ -372,6 +214,7 @@ app.post('/v1/messages', async (req, res) => {
     const response = await fetch(ANTHROPIC_URL, {
       method: 'POST',
       headers: {
+        ...req.headers,
         'Content-Type': 'application/json',
         'anthropic-version': req.headers['anthropic-version'] || '2023-06-01',
         'x-api-key': req.headers['x-api-key'],
@@ -532,108 +375,75 @@ app.post('/v1/messages', async (req, res) => {
   }
 });
 
-// API to get all requests (for debugging/viewing)
+// API to get all requests
 app.get('/api/requests', (req, res) => {
-  const stmt = db.prepare('SELECT * FROM requests ORDER BY timestamp DESC LIMIT 100');
-  const requests = stmt.all();
-  res.json(requests);
-});
-
-// API to get all conversations
-app.get('/api/conversations', (req, res) => {
   try {
-    const conversations = getAllConversations();
-
-    // Flatten into array format like Go version
-    const allConversations = [];
-
-    for (const [projectPath, convs] of Object.entries(conversations)) {
-      for (const conv of convs) {
-        // Extract first user message for preview
-        let firstMessage = '';
-        for (const msg of conv.messages) {
-          if (msg.type === 'user') {
-            const text = extractTextFromMessage(msg.message);
-            if (text) {
-              firstMessage = text.length > 200 ? text.substring(0, 200) + '...' : text;
-              break;
-            }
-          }
-        }
-
-        const startTime = new Date(conv.startTime);
-        const endTime = new Date(conv.endTime);
-
-        allConversations.push({
-          id: conv.sessionId,
-          requestCount: conv.messageCount,
-          startTime: conv.startTime,
-          lastActivity: conv.endTime,
-          duration: endTime - startTime,
-          firstMessage,
-          projectName: conv.projectName
-        });
-      }
-    }
-
-    // Sort by last activity (newest first)
-    allConversations.sort((a, b) => new Date(b.lastActivity) - new Date(a.lastActivity));
-
-    // Pagination
     const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 10;
-    const start = (page - 1) * limit;
-    const end = start + limit;
+    const limit = parseInt(req.query.limit) || 50;
+    const offset = (page - 1) * limit;
 
-    const paginatedConversations = allConversations.slice(start, end);
+    // Get total count
+    const countStmt = db.prepare('SELECT COUNT(*) as total FROM requests');
+    const { total } = countStmt.get();
+
+    // Get paginated requests
+    const stmt = db.prepare(`
+      SELECT * FROM requests
+      ORDER BY timestamp DESC
+      LIMIT ? OFFSET ?
+    `);
+    const requests = stmt.all(limit, offset);
+
+    // Parse JSON fields for easier consumption
+    const parsedRequests = requests.map(req => {
+      try {
+        return {
+          ...req,
+          headers: req.headers ? JSON.parse(req.headers) : null,
+          body: req.body ? JSON.parse(req.body) : null,
+          response: req.response ? (req.response.startsWith('data:') ? req.response : JSON.parse(req.response)) : null
+        };
+      } catch (e) {
+        return req;
+      }
+    });
 
     res.json({
-      conversations: paginatedConversations,
-      total: allConversations.length
+      requests: parsedRequests,
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit)
     });
   } catch (error) {
-    console.error('Error getting conversations:', error);
-    res.status(500).json({ error: 'Failed to get conversations' });
+    console.error('Error getting requests:', error);
+    res.status(500).json({ error: 'Failed to get requests' });
   }
 });
 
-// API to get a specific conversation by ID
-app.get('/api/conversations/:id', (req, res) => {
+// API to get a specific request by ID
+app.get('/api/requests/:id', (req, res) => {
   try {
-    const sessionId = req.params.id;
-    const projectPath = req.query.project;
+    const stmt = db.prepare('SELECT * FROM requests WHERE id = ?');
+    const request = stmt.get(req.params.id);
 
-    if (!projectPath) {
-      return res.status(400).json({ error: 'Project path is required' });
+    if (!request) {
+      return res.status(404).json({ error: 'Request not found' });
     }
 
-    const conversation = getConversation(projectPath, sessionId);
-
-    if (!conversation) {
-      return res.status(404).json({ error: 'Conversation not found' });
+    // Parse JSON fields
+    try {
+      request.headers = request.headers ? JSON.parse(request.headers) : null;
+      request.body = request.body ? JSON.parse(request.body) : null;
+      request.response = request.response ? (request.response.startsWith('data:') ? request.response : JSON.parse(request.response)) : null;
+    } catch (e) {
+      // Keep raw if parse fails
     }
 
-    res.json(conversation);
+    res.json(request);
   } catch (error) {
-    console.error('Error getting conversation:', error);
-    res.status(500).json({ error: 'Failed to get conversation' });
-  }
-});
-
-// API to get conversations by project
-app.get('/api/conversations/project/:projectPath', (req, res) => {
-  try {
-    const projectPath = req.params.projectPath;
-    const conversations = getAllConversations();
-
-    if (!conversations[projectPath]) {
-      return res.json([]);
-    }
-
-    res.json(conversations[projectPath]);
-  } catch (error) {
-    console.error('Error getting project conversations:', error);
-    res.status(500).json({ error: 'Failed to get project conversations' });
+    console.error('Error getting request:', error);
+    res.status(500).json({ error: 'Failed to get request' });
   }
 });
 
