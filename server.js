@@ -5,6 +5,7 @@ const crypto = require('crypto');
 const app = express();
 const PORT = 8181;
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
+// const ANTHROPIC_URL = 'http://localhost:4001/v1/messages';
 const REQUEST_TIMEOUT = 300000; // 5 minutes (same as claude-code-proxy)
 
 // Initialize SQLite database
@@ -45,6 +46,37 @@ app.use(express.json({ limit: '50mb' }));
 
 // Serve static files (index.html)
 app.use(express.static('.'));
+
+// Helper function to generate conversation ID from messages
+function generateConversationId(messages) {
+  if (!messages || messages.length === 0) {
+    return crypto.randomBytes(6).toString('hex');
+  }
+
+  // Take first 4 messages (or fewer if conversation is shorter)
+  const firstMessages = messages.slice(0, Math.min(4, messages.length));
+
+  // Normalize messages by removing cache_control for consistency
+  const normalized = firstMessages.map(msg => {
+    const copy = { ...msg };
+    if (copy.content && Array.isArray(copy.content)) {
+      copy.content = copy.content.map(item => {
+        if (typeof item === 'object' && item !== null) {
+          const { cache_control, ...rest } = item;
+          return rest;
+        }
+        return item;
+      });
+    }
+    return copy;
+  });
+
+  // Hash the normalized messages
+  return crypto.createHash('md5')
+    .update(JSON.stringify(normalized))
+    .digest('hex')
+    .substring(0, 12);
+}
 
 // Helper function to sanitize headers (like claude-code-proxy)
 function sanitizeHeaders(headers) {
@@ -185,12 +217,15 @@ app.post('/v1/messages', async (req, res) => {
 
   // Save request to database with sanitized headers
   const insertStmt = db.prepare(`
-    INSERT INTO requests (id, method, endpoint, headers, body, original_model, routed_model, user_agent, content_type)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO requests (id, method, endpoint, headers, body, original_model, routed_model, user_agent, content_type, session_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   const originalModel = req.body.model;
   const routedModel = req.body.model; // For now, no routing - just pass through
+
+  // Generate conversation ID from messages
+  const conversationId = generateConversationId(req.body.messages);
 
   insertStmt.run(
     requestId,
@@ -201,7 +236,8 @@ app.post('/v1/messages', async (req, res) => {
     originalModel,
     routedModel,
     req.headers['user-agent'] || null,
-    req.headers['content-type'] || null
+    req.headers['content-type'] || null,
+    conversationId
   );
 
   console.log(`📥 Request ${requestId} - Model: ${originalModel}, Stream: ${req.body.stream}`);
@@ -381,30 +417,85 @@ app.get('/api/requests', (req, res) => {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 50;
     const offset = (page - 1) * limit;
+    const search = req.query.search || '';
 
-    // Get total count
-    const countStmt = db.prepare('SELECT COUNT(*) as total FROM requests');
-    const { total } = countStmt.get();
+    let total, requests;
 
-    // Get paginated requests
-    const stmt = db.prepare(`
-      SELECT * FROM requests
-      ORDER BY timestamp DESC
-      LIMIT ? OFFSET ?
-    `);
-    const requests = stmt.all(limit, offset);
+    if (search) {
+      // Use FTS5 for full-text search
+      // Get total count from FTS5
+      const countStmt = db.prepare(`
+        SELECT COUNT(*) as total
+        FROM requests_fts
+        WHERE requests_fts MATCH ?
+      `);
+      ({ total } = countStmt.get(search));
+
+      // Get paginated requests using FTS5 with JOIN
+      const stmt = db.prepare(`
+        SELECT
+          r.*,
+          json_array_length(json_extract(r.body, '$.messages')) as message_count
+        FROM requests_fts
+        JOIN requests r ON requests_fts.rowid = r.rowid
+        WHERE requests_fts MATCH ?
+        ORDER BY r.timestamp DESC
+        LIMIT ? OFFSET ?
+      `);
+      requests = stmt.all(search, limit, offset);
+    } else {
+      // No search - get all requests
+      const countStmt = db.prepare(`SELECT COUNT(*) as total FROM requests`);
+      ({ total } = countStmt.get());
+
+      const stmt = db.prepare(`
+        SELECT
+          *,
+          json_array_length(json_extract(body, '$.messages')) as message_count
+        FROM requests
+        ORDER BY timestamp DESC
+        LIMIT ? OFFSET ?
+      `);
+      requests = stmt.all(limit, offset);
+    }
 
     // Parse JSON fields for easier consumption
     const parsedRequests = requests.map(req => {
       try {
-        return {
+        const parsed = {
           ...req,
           headers: req.headers ? JSON.parse(req.headers) : null,
           body: req.body ? JSON.parse(req.body) : null,
-          response: req.response ? (req.response.startsWith('data:') ? req.response : JSON.parse(req.response)) : null
+          response: req.response ? (req.response.startsWith('data:') ? req.response : JSON.parse(req.response)) : null,
+          message_count: req.message_count || 0
         };
+
+        // Count matches in messages if searching
+        let matchCount = 0;
+        if (search && parsed.body && parsed.body.messages) {
+          const searchLower = search.toLowerCase();
+          parsed.body.messages.forEach(msg => {
+            if (msg.content) {
+              const contentStr = typeof msg.content === 'string'
+                ? msg.content
+                : JSON.stringify(msg.content);
+              const contentLower = contentStr.toLowerCase();
+              // Count occurrences
+              const matches = contentLower.match(new RegExp(searchLower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'));
+              if (matches) matchCount += matches.length;
+            }
+          });
+        }
+
+        // Always add match_count when searching
+        if (search) {
+          parsed.match_count = matchCount;
+        }
+
+        return parsed;
       } catch (e) {
-        return req;
+        // Even on error, include match_count: 0 if searching
+        return search ? { ...req, match_count: 0 } : req;
       }
     });
 
@@ -421,7 +512,7 @@ app.get('/api/requests', (req, res) => {
   }
 });
 
-// API to get a specific request by ID
+// API to get a specific request by ID with navigation
 app.get('/api/requests/:id', (req, res) => {
   try {
     const stmt = db.prepare('SELECT * FROM requests WHERE id = ?');
@@ -440,10 +531,118 @@ app.get('/api/requests/:id', (req, res) => {
       // Keep raw if parse fails
     }
 
+    // Add conversation navigation if session_id exists
+    if (request.session_id && request.body && request.body.messages) {
+      const msgCount = request.body.messages.length;
+
+      // Get previous 10 requests (going back in steps of 2)
+      const prev10 = [];
+      for (let i = 1; i <= 10; i++) {
+        const targetCount = msgCount - (i * 2);
+        if (targetCount <= 0) break;
+
+        const prevStmt = db.prepare(`
+          SELECT id, timestamp
+          FROM requests
+          WHERE session_id = ? AND json_array_length(json_extract(body, '$.messages')) = ?
+          ORDER BY timestamp DESC
+          LIMIT 1
+        `);
+        const prevReq = prevStmt.get(request.session_id, targetCount);
+        if (prevReq) {
+          prev10.push({ id: prevReq.id, msg_count: targetCount, timestamp: prevReq.timestamp });
+        }
+      }
+
+      // Check if there are more previous requests
+      const minMsgCount = prev10.length > 0 ? prev10[prev10.length - 1].msg_count : msgCount;
+      const hasMorePrevStmt = db.prepare(`
+        SELECT COUNT(*) as count
+        FROM requests
+        WHERE session_id = ? AND json_array_length(json_extract(body, '$.messages')) < ?
+      `);
+      const hasMorePrev = hasMorePrevStmt.get(request.session_id, minMsgCount - 2).count > 0;
+
+      // Get all next requests (could be multiple due to forking)
+      const nextStmt = db.prepare(`
+        SELECT id, timestamp
+        FROM requests
+        WHERE session_id = ? AND json_array_length(json_extract(body, '$.messages')) = ?
+        ORDER BY timestamp ASC
+      `);
+      const nextReqs = nextStmt.all(request.session_id, msgCount + 2);
+
+      // Add navigation to response
+      request.navigation = {
+        conversation_id: request.session_id,
+        msg_count: msgCount,
+        prev_10: prev10.reverse(), // Reverse to show oldest->newest
+        has_more_prev: hasMorePrev,
+        next: nextReqs.map(r => ({ id: r.id, msg_count: msgCount + 2, timestamp: r.timestamp }))
+      };
+    }
+
     res.json(request);
   } catch (error) {
     console.error('Error getting request:', error);
     res.status(500).json({ error: 'Failed to get request' });
+  }
+});
+
+// API to get older history for a request (lazy loading)
+app.get('/api/requests/:id/history', (req, res) => {
+  try {
+    const stmt = db.prepare('SELECT session_id, body FROM requests WHERE id = ?');
+    const request = stmt.get(req.params.id);
+
+    if (!request) {
+      return res.status(404).json({ error: 'Request not found' });
+    }
+
+    const body = request.body ? JSON.parse(request.body) : null;
+    if (!body || !body.messages) {
+      return res.json({ prev_requests: [], has_more: false });
+    }
+
+    const msgCount = body.messages.length;
+    const offset = parseInt(req.query.offset) || 10;
+    const limit = parseInt(req.query.limit) || 10;
+
+    // Get previous requests starting from offset
+    const prevRequests = [];
+    for (let i = offset; i < offset + limit; i++) {
+      const targetCount = msgCount - (i * 2);
+      if (targetCount <= 0) break;
+
+      const prevStmt = db.prepare(`
+        SELECT id, timestamp
+        FROM requests
+        WHERE session_id = ? AND json_array_length(json_extract(body, '$.messages')) = ?
+        ORDER BY timestamp DESC
+        LIMIT 1
+      `);
+      const prevReq = prevStmt.get(request.session_id, targetCount);
+      if (prevReq) {
+        prevRequests.push({ id: prevReq.id, msg_count: targetCount, timestamp: prevReq.timestamp });
+      }
+    }
+
+    // Check if there are more requests beyond this batch
+    const minMsgCount = prevRequests.length > 0 ? prevRequests[prevRequests.length - 1].msg_count : 0;
+    const hasMoreStmt = db.prepare(`
+      SELECT COUNT(*) as count
+      FROM requests
+      WHERE session_id = ? AND json_array_length(json_extract(body, '$.messages')) < ?
+    `);
+    const hasMore = minMsgCount > 0 && hasMoreStmt.get(request.session_id, minMsgCount - 2).count > 0;
+
+    res.json({
+      prev_requests: prevRequests.reverse(), // oldest->newest
+      has_more: hasMore
+    });
+  } catch (error) {
+    console.error('Error getting history:', error);
+    res.status(500).json({ error: 'Failed to get history' });
   }
 });
 

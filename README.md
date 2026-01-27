@@ -61,3 +61,5 @@ CREATE TABLE requests (
   response_time INTEGER
 )
 ```
+
+use pm2 to start this
