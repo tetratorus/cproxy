@@ -247,15 +247,33 @@ app.post('/v1/messages', async (req, res) => {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
 
+    // Build clean headers for upstream - don't forward hop-by-hop or Express headers
+    const upstreamHeaders = {
+      'Content-Type': 'application/json',
+      'anthropic-version': req.headers['anthropic-version'] || '2023-06-01',
+      'Accept-Encoding': 'gzip',
+    };
+
+    // Forward API key auth if present
+    if (req.headers['x-api-key']) {
+      upstreamHeaders['x-api-key'] = req.headers['x-api-key'];
+    }
+
+    // Forward OAuth/session token auth if present
+    if (req.headers['authorization']) {
+      upstreamHeaders['authorization'] = req.headers['authorization'];
+    }
+
+    // Forward other Anthropic-specific headers
+    for (const [key, value] of Object.entries(req.headers)) {
+      if (key.startsWith('anthropic-') && key !== 'anthropic-version') {
+        upstreamHeaders[key] = value;
+      }
+    }
+
     const response = await fetch(ANTHROPIC_URL, {
       method: 'POST',
-      headers: {
-        ...req.headers,
-        'Content-Type': 'application/json',
-        'anthropic-version': req.headers['anthropic-version'] || '2023-06-01',
-        'x-api-key': req.headers['x-api-key'],
-        'Accept-Encoding': 'gzip', // Request gzip compression like claude-code-proxy
-      },
+      headers: upstreamHeaders,
       body: JSON.stringify(req.body),
       signal: controller.signal,
     });
