@@ -123,7 +123,7 @@ function parseSSEStream(sseText) {
   let messageId = '';
   let model = '';
   let stopReason = '';
-  let usage = { input_tokens: 0, output_tokens: 0 };
+  let usage = { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
 
   for (const line of lines) {
     if (!line.startsWith('data: ')) continue;
@@ -134,11 +134,16 @@ function parseSSEStream(sseText) {
     try {
       const data = JSON.parse(dataStr);
 
-      // Extract message metadata
+      // Extract message metadata and usage from message_start
       if (data.type === 'message_start' && data.message) {
         messageId = data.message.id || '';
         model = data.message.model || '';
         stopReason = data.message.stop_reason || '';
+        if (data.message.usage) {
+          usage.input_tokens = data.message.usage.input_tokens || 0;
+          usage.cache_creation_input_tokens = data.message.usage.cache_creation_input_tokens || 0;
+          usage.cache_read_input_tokens = data.message.usage.cache_read_input_tokens || 0;
+        }
       }
 
       // Extract text content
@@ -345,8 +350,8 @@ app.post('/v1/messages', async (req, res) => {
           parsed.model || originalModel,
           parsed.usage.input_tokens,
           parsed.usage.output_tokens,
-          0, // cache_creation_input_tokens not in streaming events
-          0, // cache_read_input_tokens not in streaming events
+          parsed.usage.cache_creation_input_tokens,
+          parsed.usage.cache_read_input_tokens,
           requestId
         );
 
