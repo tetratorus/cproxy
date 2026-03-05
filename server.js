@@ -256,7 +256,7 @@ app.post('/v1/messages', async (req, res) => {
     const upstreamHeaders = {
       'Content-Type': 'application/json',
       'anthropic-version': req.headers['anthropic-version'] || '2023-06-01',
-      'Accept-Encoding': 'gzip',
+      ...(req.headers['accept-encoding'] ? { 'Accept-Encoding': req.headers['accept-encoding'] } : {}),
     };
 
     // Forward API key auth if present
